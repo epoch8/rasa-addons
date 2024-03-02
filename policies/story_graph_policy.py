@@ -27,11 +27,6 @@ from rasa.shared.core.events import (
     INTENT_NAME_KEY,
 )
 from rasa.shared.core.trackers import DialogueStateTracker
-from rasa.core.constants import (
-    DEFAULT_POLICY_PRIORITY,
-    POLICY_PRIORITY,
-    POLICY_MAX_HISTORY,
-)
 from rasa.shared.core.training_data.structures import (
     StoryGraph,
     RuleStep,
@@ -139,8 +134,7 @@ INTENT_ANY_KEY = event_to_key(INTENT_ANY)
 
 
 class EventGraph:
-    class ValidationError(RuntimeError):
-        ...
+    class ValidationError(RuntimeError): ...
 
     def __init__(
         self, graph_nodes: Dict[Text, List[EventGraphNode]], validate=True
@@ -150,8 +144,7 @@ class EventGraph:
         self._graph_nodes = graph_nodes
 
     @staticmethod
-    def validate(graph_nodes: Dict[Text, List[EventGraphNode]]) -> None:
-        ...
+    def validate(graph_nodes: Dict[Text, List[EventGraphNode]]) -> None: ...
 
     @classmethod
     def from_story_graph(
@@ -163,7 +156,8 @@ class EventGraph:
         # logger.debug(f'Checkpoints: {story_graph.story_end_checkpoints}')
         steps = story_graph.ordered_steps()
         logger.debug(f'ordered_steps:')
-        chekpoint_nodes: Dict[Text, List[EventGraphNode]] = {}
+        start_chekpoint_nodes: Dict[Text, List[EventGraphNode]] = {}
+        end_chekpoint_nodes: Dict[Text, List[EventGraphNode]] = {}
         i = 0
         for step in steps:
             logger.debug(step.block_name)
@@ -171,13 +165,7 @@ class EventGraph:
                 logger.debug('  Skipping rule')
                 continue
             logger.debug(f'  s_cp: {step.start_checkpoints}')
-            prev_nodes: Set[EventGraphNode] = set()
-            if len(step.start_checkpoints) > 1:
-                logger.debug(f'{step.block_name}: len(step.start_checkpoints) > 1')
-            for s_cp in step.start_checkpoints:
-                if s_cp.name == STORY_START:
-                    continue
-                prev_nodes = prev_nodes.union(chekpoint_nodes[s_cp.name])
+            prev_node: Optional[EventGraphNode] = None
             for event in step.events:
                 event_key = event_to_key(event)
                 logger.debug(f'      {event_key}')
@@ -192,19 +180,38 @@ class EventGraph:
                     graph_node.debug_data['responses'] = domain.responses.get(
                         event.action_name
                     )
-                i += 1
-                for p_node in prev_nodes:
-                    p_node.add_child(graph_node)
-                prev_nodes = set([graph_node])
+
+                if prev_node is None:
+                    for s_cp in step.start_checkpoints:
+                        if s_cp.name == STORY_START:
+                            continue
+                        start_chekpoint_nodes.setdefault(s_cp.name, []).append(
+                            graph_node
+                        )
+                else:
+                    prev_node.add_child(graph_node)
+
+                prev_node = graph_node
                 graph_nodes.setdefault(event_key, []).append(graph_node)
+                i += 1
+
             logger.debug(f'  e_cp: {step.end_checkpoints}')
-            if len(step.end_checkpoints) > 1:
-                logger.debug(f'{step.block_name}: len(step.end_checkpoints) > 1')
-            for cp in step.end_checkpoints:
+            for e_cp in step.end_checkpoints:
                 # TODO handle condition
-                if cp.name == STORY_END:
+                if e_cp.name == STORY_END or prev_node is None:
                     continue
-                chekpoint_nodes.setdefault(cp.name, []).extend(prev_nodes)
+                end_chekpoint_nodes.setdefault(e_cp.name, []).append(prev_node)
+
+        # Connect steps
+        for cp_name, end_nodes in end_chekpoint_nodes.items():
+            for e_node in end_nodes:
+                if cp_name not in start_chekpoint_nodes:
+                    raise RuntimeError(
+                        f'No matching checkpoint {cp_name} '
+                        f'found for node {e_node.event}!'
+                    )
+                for s_node in start_chekpoint_nodes[cp_name]:
+                    e_node.add_child(s_node)
 
         return cls(graph_nodes)
 
